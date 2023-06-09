@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Message Board</title>
+    </head>
+    <body>
+        <div>
+            <button onclick="connect()">Connect</button>
+        </div>
+        <div>
+            <label for="message">Message: </label><input id="message" name="message"><button id="send" onclick="send()">Send</button></div>
+        </div>
+        <div>
+            <pre id="log"></pre>
+        </div>
+        <script>
+
+document.getElementById("message").addEventListener
+(
+    "keyup", function(event) { if (event.keyCode === 13) { event.preventDefault(); document.getElementById("send").click(); } }
+);
+
+const SerialServiceUUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const TXCharictaristicUUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+var Encoder = new TextEncoder();
+var Characteristic;
+
+async function connect()
+{
+    let options = {filters:[{services:[SerialServiceUUID]}]};
+
+    try
+    {
+        log('Requesting device...');
+        const device = await navigator.bluetooth.requestDevice(options);
+
+        log('Connecting to device...');
+        const server = await device.gatt.connect();
+
+        log('Getting service...');
+        const service = await server.getPrimaryService(SerialServiceUUID);
+
+        log('Getting characteristic...');
+        Characteristic = await service.getCharacteristic(TXCharictaristicUUID);
+    }
+    catch(error)
+    {
+        log('Error: ' + error);
+    }
+}
+
+async function send()
+{
+    try
+    {
+        log('Writing value...');
+        let message = document.getElementById('message').value;
+        await Characteristic.writeValue(Encoder.encode(message));
+    }
+    catch(error)
+    {
+        log('Error: ' + error);
+    }
+}
+
+function log(message)
+{
+    document.querySelector('#log').textContent += message + '\n';
+}
+
+        </script>
+    </body>
+</html>
