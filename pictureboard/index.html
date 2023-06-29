@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Picture Board</title>
+    </head>
+    <body>
+        <div>
+            <button id="connect" onclick="connect()">Connect</button>
+            <input id="file" type="file" accept="image/*" onchange="fileSelected()">
+            <button id="make" onclick="make()">Make</button>
+            <button id="send" onclick="send()">Send</button>
+        </div>
+        <div id="image"><canvas id="canvas"></canvas></div>
+        <div>
+            <pre id="log"></pre>
+        </div>
+        <script>
+
+const ServiceUUID = '50696342-4d6f-7669-6556-65727469676f';
+const    InfoUUID = makeCharacteristicUUID(ServiceUUID, 1);
+const ControlUUID = makeCharacteristicUUID(ServiceUUID, 2);
+const      TXUUID = makeCharacteristicUUID(ServiceUUID, 3);
+var Info;
+var PackedData;
+var ControlCharacteristic;
+var TXCharacteristic;
+
+async function fileSelected()
+{
+    let canvas = document.getElementById('canvas');
+    canvas.width = Info.width;
+    canvas.height = Info.height;
+
+    let file = document.getElementById('file').files[0];
+    let reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = function(event)
+    {
+        let convertToGreyscale = isPaletteGreyscale();
+        let ditheringStrength = 1;
+        let img = new Image();
+        img.src = event.target.result;
+        img.onload = function()
+        {
+            let xScale = canvas.width / img.width;
+            let yScale = canvas.height / img.height;
+            let width = xScale > yScale ? canvas.width : img.width * yScale;
+            let height = xScale > yScale ? img.height * xScale : canvas.height;
+
+            let context = canvas.getContext('2d');
+            context.imageSmoothingEnabled = true;
+            context.imageSmoothingQuality = "high";
+            context.drawImage(img, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+
+            PackedData = new Uint8Array((canvas.width * canvas.height * Info.bpp) / 8);
+
+            let imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+            let packedIndex = 0;
+            let packed = 0;
+            let shift = 0;
+const start = Date.now();
+            let offset = 0;
+            for (let y = 0; y < canvas.height; ++y)
+            {
+                for (let x = 0; x < canvas.width; ++x)
+                {
+                    let oldColour = [imageData.data[offset], imageData.data[offset+1], imageData.data[offset+2]];
+                    if (convertToGreyscale)
+                    {
+                        let brightness = (oldColour[0] + oldColour[1] + oldColour[2]) / 3;
+                        oldColour[0] = brightness; oldColour[1] = brightness; oldColour[2] = brightness;
+                    }
+
+//                    let newColourIndex = floydSteinberg(imageData, canvas.width, canvas.height, x, y, offset, oldColour, ditheringStrength);
+                    let newColourIndex = orderedDither(imageData, x, y, offset, oldColour, ditheringStrength);
+
+                    packed = (packed << Info.bpp) | newColourIndex;
+                    shift += Info.bpp;
+                    if (shift >= 8)
+                    {
+                        PackedData[packedIndex] = packed;
+                        ++packedIndex;
+                        packed = 0;
+                        shift = 0;
+                    }
+
+                    offset += 4;
+                }
+            }
+log('Execution time: ' + (Date.now() - start)/1000 + 's');
+            context.putImageData(imageData, 0, 0);
+
+            PackedData = compress(PackedData);
+        };
+  };
+}
+
+async function connect()
+{
+    let options = {filters:[{services:[ServiceUUID]}]};
+
+    try
+    {
+        log('Requesting device...');
+        const device = await navigator.bluetooth.requestDevice(options);
+
+        log('Connecting to device...');
+        const server = await device.gatt.connect();
+        log('Fetching service...');
+        const service = await server.getPrimaryService(ServiceUUID);
+        log('Fetching characteristics...');
+        Info = JSON.parse(new TextDecoder().decode(await (await service.getCharacteristic(InfoUUID)).readValue()));
+        Info.paletteLuminance = calculatePaletteLuminance();
+        Info.luminanceOrder = calculateLuminanceOrder();
+        ControlCharacteristic = await service.getCharacteristic(ControlUUID);
+        TXCharacteristic = await service.getCharacteristic(TXUUID);
+        log('Connected');
+    }
+    catch(error)
+    {
+        log('Error: ' + error);
+    }
+}
+
+async function send()
+{
+    try
+    {
+        let controlInfo = createControlInfo(PackedData.length, fnvHash(PackedData));
+        log('Sending control info...');
+        await ControlCharacteristic.writeValueWithoutResponse(controlInfo);
+        log('Sending data...');
+        for (let offset = 0; offset < PackedData.length; offset += 512)
+        {
+            let batch = PackedData.slice(offset, offset + 512);
+            if (offset % (512*32) == 0)
+            {
+                log(Math.floor(100 * offset / PackedData.length) + '%');
+                await TXCharacteristic.writeValueWithResponse(batch);
+               
+            }
+            else
+            {
+                await TXCharacteristic.writeValueWithoutResponse(batch);
+            }
+        }
+        log('Done');
+    }
+    catch(error)
+    {
+        log('Error: ' + error);
+    }
+}
+
+function floydSteinberg(imageData, width, height, x, y, offset, oldColour, ditheringStrength)
+{
+    let newColourIndex = pickClosestColourIndex(oldColour[0], oldColour[1], oldColour[2]);
+    let newColour = Info.palette[newColourIndex];
+    for (let component = 0; component < 3; ++component)
+    {
+        let newComponentValue = (newColour >>> ((2-component)*8)) & 255;
+        imageData.data[offset + component] = newComponentValue;
+        componentError = (oldColour[component] - newComponentValue) * ditheringStrength;
+        if (x < width - 1)
+        {
+            imageData.data[offset + 4 + component] += componentError * 7 / 16;
+        }
+        if (y < height - 1)
+        {
+            if (x > 0)
+            {
+                imageData.data[offset + width * 4 - 4 + component] += componentError * 3 / 16;
+            }
+            imageData.data[offset + width * 4 + component] += componentError * 5 / 16;
+            if (x < width - 1)
+            {
+                imageData.data[offset + width * 4 + 4 + component] += componentError * 1 / 16;
+            }
+        } 
+    }
+
+    return newColourIndex;
+}
+
+const BayerMatrix2Power = 2;
+const BayerMatrixSize = 1 << BayerMatrix2Power;
+const BayerMatrixSizeMask = BayerMatrixSize - 1;
+const BayerMatrixSlots = BayerMatrixSize * BayerMatrixSize;
+const BayerMatrix = flattenMatrix(bayerMatrix(BayerMatrix2Power));
+
+async function orderedDither(imageData, x, y, offset, oldColour, ditheringStrength)
+{
+    let usageCounts = Array(Info.palette.length);
+    for (let i = 0; i < Info.palette.length; ++i)
+    {
+        usageCounts[i] = 0;
+    }
+    let error0 = 0, error1 = 0, error2 = 0;
+    let oldColour0 = oldColour[0], oldColour1 = oldColour[1], oldColour2 = oldColour[2];
+    for (let i = 0; i < BayerMatrixSlots; ++i)
+    {
+        let colourIndex = pickClosestColourIndex(oldColour0+error0*ditheringStrength, oldColour1+error1*ditheringStrength, oldColour2+error2*ditheringStrength);
+        ++usageCounts[colourIndex];
+        let packedColour = Info.palette[colourIndex];
+        error0 += oldColour0 - (packedColour >>> 16);
+        error1 += oldColour1 - ((packedColour >>> 8) & 255);
+        error2 += oldColour2 - (packedColour & 255);
+    }
+
+    let slotSelection = BayerMatrix[((y & BayerMatrixSizeMask) << BayerMatrix2Power) + (x & BayerMatrixSizeMask)];
+    for (let i = 0; i < Info.palette.length; ++i)
+    {
+        colourIndex = Info.luminanceOrder[i];
+        slotSelection -= usageCounts[colourIndex];
+        if (slotSelection < 0)
+        {
+            var newColourIndex = colourIndex;
+            break;
+        }
+    }
+
+    let newColour = Info.palette[newColourIndex];
+    imageData.data[offset] = newColour >>> 16;
+    imageData.data[offset+1] = (newColour >>> 8) & 255;
+    imageData.data[offset+2] = newColour & 255;
+
+    return newColourIndex;
+}
+
+function flattenMatrix(matrix)
+{
+    let result = [];
+    for (y = 0; y < matrix.length; ++y)
+    {
+        for (x = 0; x < matrix[y].length; ++x)
+        {
+            result.push(matrix[y][x]);
+        }
+    }
+
+    return result;
+}
+
+function bayerMatrix(matrixSize)
+{
+    if (matrixSize == 0)
+    {
+        return [[0]];
+    }
+    else
+    {
+        mSub1 = bayerMatrix(matrixSize-1);
+        m = [];
+        for (y = 0; y < mSub1.length; ++y)
+        {
+            m[y] = [];
+            m[y+mSub1.length] = [];
+            for (x = 0; x < mSub1.length; ++x)
+            {
+                m[y][x] = mSub1[y][x] * 4;
+                m[y+mSub1.length][x+mSub1.length] = mSub1[y][x] * 4 + 1;
+                m[y][x+mSub1.length] = mSub1[y][x] * 4 + 2;
+                m[y+mSub1.length][x] = mSub1[y][x] * 4 + 3;
+            }
+        }
+        return m;
+    }
+}
+
+function calculatePaletteLuminance()
+{
+    let result = [];
+
+    for (let i = 0; i < Info.palette.length; ++i)
+    {
+        let packedColour = Info.palette[i];
+        result[i] = 0;
+        for (let component = 0; component < 3; ++component)
+        {
+            result[i] += (packedColour >>> ((2-component)*8)) & 255;
+        }
+        result[i] += i / Info.palette.length;
+    }
+
+    return result;
+}
+
+function calculateLuminanceOrder()
+{
+    let result = Array.from(Array(Info.palette.length).keys());
+    result.sort((a, b) => Info.paletteLuminance[a] < Info.paletteLuminance[b] ? -1 : 1);
+    return result;
+}
+
+function isPaletteGreyscale()
+{
+    for (let paletteIndex = 0; paletteIndex < Info.palette.length; ++paletteIndex)
+    {
+        if (((Info.palette[paletteIndex] >>> 16) & 255) != ((Info.palette[paletteIndex] >>> 8) & 255) ||
+            ((Info.palette[paletteIndex] >>> 8) & 255) != ((Info.palette[paletteIndex] >>> 0) & 255))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function pickClosestColourIndex(colour0, colour1, colour2)
+{
+    let bestIndex = 0;
+    let packedColour = Info.palette[0];
+    let bestDistance = Math.abs(colour0 - (packedColour >>> 16)) + Math.abs(colour1 - ((packedColour >>> 8) & 255)) + Math.abs(colour2 - (packedColour & 255));
+
+    for (let paletteIndex = 1; paletteIndex < Info.palette.length; ++paletteIndex)
+    {
+        packedColour = Info.palette[paletteIndex];
+        let distance = Math.abs(colour0 - (packedColour >>> 16)) + Math.abs(colour1 - ((packedColour >>> 8) & 255)) + Math.abs(colour2 - (packedColour & 255));
+
+        if (distance < bestDistance)
+        {
+            bestIndex = paletteIndex;
+            bestDistance = distance;
+        }
+    }
+
+    return bestIndex;
+}
+
+function createControlInfo(dataLength, dataHash)
+{
+  const info = new Uint32Array(2);
+  info[0] = dataLength;
+  info[1] = dataHash;
+  return info;
+}
+
+function makeCharacteristicUUID(serviceUUID, offset)
+{
+  return serviceUUID.substr(0, serviceUUID.length - 8) + (parseInt(serviceUUID.substr(serviceUUID.length - 8), 16) + offset).toString(16).padStart(8, '0');
+}
+
+function fnvHash(data)
+{
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < data.length; ++index)
+  {
+    hash = (hash ^ data[index]) >>> 0;
+    hash = (hash + (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)) >>> 0;
+  }
+  return hash;
+}
+
+function compress(uncompressed)
+{
+    let maxDictionarySize = 1 << 16;
+
+    let dictionary = {};
+    for (let i = 0; i < 256; ++i) { dictionary[String.fromCharCode(i)] = i; }
+
+    let w = '';
+    let compressed = [];
+    let dictionarySize = 256;
+    for (let i = 0; i < uncompressed.length; ++i)
+    {
+        let c = String.fromCharCode(uncompressed[i]);
+        let wc = w + c;
+        if (dictionary.hasOwnProperty(wc))
+        {
+            w = wc;
+        }
+        else
+        {
+            compressed.push(dictionary[w]);
+            if (dictionarySize < maxDictionarySize) { dictionary[wc] = dictionarySize++; }
+            w = c;
+        }
+    }
+
+    if (w !== '') { compressed.push(dictionary[w]); }
+
+    compressed = new Uint16Array(compressed);
+    compressed = new Uint8Array(compressed.buffer);
+    return compressed;
+}
+
+function log(message)
+{
+    document.querySelector('#log').textContent += message + '\n';
+}
+
+        </script>
+    </body>
+</html>
