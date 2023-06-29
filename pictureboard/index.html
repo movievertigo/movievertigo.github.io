@@ -190,7 +190,7 @@ const BayerMatrixSizeMask = BayerMatrixSize - 1;
 const BayerMatrixSlots = BayerMatrixSize * BayerMatrixSize;
 const BayerMatrix = flattenMatrix(bayerMatrix(BayerMatrix2Power));
 
-async function orderedDither(imageData, x, y, offset, oldColour, ditheringStrength)
+function orderedDither(imageData, x, y, offset, oldColour, ditheringStrength)
 {
     let usageCounts = Array(Info.palette.length);
     for (let i = 0; i < Info.palette.length; ++i)
