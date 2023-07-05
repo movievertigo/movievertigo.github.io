@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Video Matrix</title>
+    </head>
+    <body>
+        <div>
+            <button id="connect" onclick="connect()">Connect</button>
+            <button id="send" onclick="send()">Send</button>
+            <video muted hidden id="video"></video>
+            <canvas id="canvas" width="16" height="16" style="width:256px; height:256px; image-rendering:pixelated;";></canvas>
+        </div>
+        <div>
+            <pre id="log"></pre>
+        </div>
+        <script>
+const ServiceUUID = '5669644d-4d6f-7669-6556-65727469676f';
+const    InfoUUID = makeCharacteristicUUID(ServiceUUID, 1);
+const      TXUUID = makeCharacteristicUUID(ServiceUUID, 3);
+var Info;
+var PackedData;
+var TXCharacteristic;
+
+var PreviousTime = 0;
+const Video = document.getElementById('video');
+const Canvas = document.getElementById('canvas');
+
+
+const Context = Canvas.getContext('2d', {willReadFrequently: true});
+Context.imageSmoothingEnabled = true;
+Context.imageSmoothingQuality = "high";
+
+async function connect()
+{
+    let options = {filters:[{services:[ServiceUUID]}]};
+
+    try
+    {
+        log('Requesting device...');
+        const device = await navigator.bluetooth.requestDevice(options);
+
+        log('Connecting to device...');
+        const server = await device.gatt.connect();
+        log('Fetching service...');
+        const service = await server.getPrimaryService(ServiceUUID);
+        log('Fetching characteristics...');
+        Info = JSON.parse(new TextDecoder().decode(await (await service.getCharacteristic(InfoUUID)).readValue()));
+        PackedData = PackedData = new Uint16Array(Info.width * Info.height);
+        TXCharacteristic = await service.getCharacteristic(TXUUID);
+        log('Connected');
+
+        startCamera();
+    }
+    catch(error)
+    {
+        log('Error: ' + error);
+    }
+}
+
+async function send()
+{
+    try
+    {
+        await TXCharacteristic.writeValueWithoutResponse(PackedData);
+    }
+    catch(error)
+    {
+        log('Error: ' + error);
+    }
+}
+
+function makeCharacteristicUUID(serviceUUID, offset)
+{
+  return serviceUUID.substr(0, serviceUUID.length - 8) + (parseInt(serviceUUID.substr(serviceUUID.length - 8), 16) + offset).toString(16).padStart(8, '0');
+}
+
+async function startCamera()
+{
+    Video.srcObject = await navigator.mediaDevices.getUserMedia({video: true});
+    await Video.play();
+
+    drawFrame(0);
+}
+
+async function drawFrame(deltaTime)
+{
+    let xScale = Canvas.width / Video.videoWidth;
+    let yScale = Canvas.height / Video.videoHeight;
+    let width = xScale > yScale ? Canvas.width : Video.videoWidth * yScale;
+    let height = xScale > yScale ? Video.videoHeight * xScale : Canvas.height;
+
+    Context.drawImage(Video, (Canvas.width - width) / 2, (Canvas.height - height) / 2, width, height);
+
+    let imageData = Context.getImageData(0, 0, Canvas.width, Canvas.height);
+    let packedIndex = 0;
+    let offset = 0;
+    for (let y = 0; y < canvas.height; ++y)
+    {
+        for (let x = 0; x < canvas.width; ++x)
+        {
+            let colour = ((imageData.data[offset] >> 3) << 11) | ((imageData.data[offset+1] >> 2) << 5) | (imageData.data[offset+2] >> 3);
+            PackedData[packedIndex++] = colour;
+            offset += 4;
+        }
+    }
+
+    await send();
+
+    window.requestAnimationFrame
+    (
+        function(currentTime)
+        {
+            var deltaTime = (currentTime - PreviousTime) / 1000.0;
+            PreviousTime = currentTime;
+            drawFrame(deltaTime);
+        }
+    );
+}
+
+
+async function getCameras()
+{
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter(device => device.kind === 'videoinput');
+
+};
+
+function log(message)
+{
+    document.querySelector('#log').textContent += message + '\n';
+}
+
+        </script>
+    </body>
+</html>
