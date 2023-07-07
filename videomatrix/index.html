@@ -7,10 +7,11 @@
     </head>
     <body>
         <div>
-            <button id="connect" onclick="connect()">Connect</button>
-            <button id="send" onclick="send()">Send</button>
             <video muted hidden id="video"></video>
-            <canvas id="canvas" width="16" height="16" style="width:256px; height:256px; image-rendering:pixelated;";></canvas>
+            <div style="display: grid; place-items: center;">
+            <canvas id="canvas" width="16" height="16" hidden style="width:75%; height:auto; image-rendering:pixelated;";></canvas>
+            <div><button id="connect" onclick="connect()" style="margin:16px; padding:8px;">Connect</button></div>
+            </div>
         </div>
         <div>
             <pre id="log"></pre>
@@ -50,6 +51,8 @@ async function connect()
         PackedData = PackedData = new Uint16Array(Info.width * Info.height);
         TXCharacteristic = await service.getCharacteristic(TXUUID);
         log('Connected');
+
+        Canvas.hidden = false;
 
         startCamera();
     }
