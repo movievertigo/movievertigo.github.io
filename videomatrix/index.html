@@ -10,7 +10,7 @@
             <video muted hidden id="video"></video>
             <div style="display: grid; place-items: center;">
             <canvas id="canvas" width="16" height="16" hidden style="width:75%; height:auto; image-rendering:pixelated;";></canvas>
-            <div><button id="connect" onclick="connect()" style="margin:16px; padding:8px;">Connect</button></div>
+            <div><button id="connect" onclick="connect()" style="margin:16px; padding:8px;">Connect</button><button id="switchcamera" hidden onclick="switchCamera()" style="margin:16px; padding:8px;">Switch Camera</button></div>
             </div>
         </div>
         <div>
@@ -24,10 +24,13 @@ var Info;
 var PackedData;
 var TXCharacteristic;
 
+var AnimationStarted = false;
 var PreviousTime = 0;
 const Video = document.getElementById('video');
 const Canvas = document.getElementById('canvas');
 
+var Cameras;
+var CurrentCamera;
 
 const Context = Canvas.getContext('2d', {willReadFrequently: true});
 Context.imageSmoothingEnabled = true;
@@ -52,9 +55,20 @@ async function connect()
         TXCharacteristic = await service.getCharacteristic(TXUUID);
         log('Connected');
 
-        Canvas.hidden = false;
+        await startCamera();
+        Cameras = await getCameras();
 
-        startCamera();
+        if (!AnimationStarted)
+        {
+            drawFrame(0);
+            AnimationStarted = true;
+        }
+
+        Canvas.hidden = false;
+        if (Cameras.length > 1)
+        {
+            document.getElementById('switchcamera').hidden = false;
+        }
     }
     catch(error)
     {
@@ -79,12 +93,25 @@ function makeCharacteristicUUID(serviceUUID, offset)
   return serviceUUID.substr(0, serviceUUID.length - 8) + (parseInt(serviceUUID.substr(serviceUUID.length - 8), 16) + offset).toString(16).padStart(8, '0');
 }
 
-async function startCamera()
+async function switchCamera()
 {
-    Video.srcObject = await navigator.mediaDevices.getUserMedia({video: true});
-    await Video.play();
+    let currentIndex = Cameras.findIndex(camera => camera.deviceId === CurrentCamera);
+    startCamera(Cameras[(currentIndex + 1) % Cameras.length].deviceId);
+}
 
-    drawFrame(0);
+async function startCamera(cameraId)
+{
+    if (cameraId)
+    {
+        Video.srcObject = await navigator.mediaDevices.getUserMedia({video: {deviceId: {exact: cameraId}}});
+    }
+    else
+    {
+        Video.srcObject = await navigator.mediaDevices.getUserMedia({video: true});
+    }
+
+    CurrentCamera = Video.srcObject.getTracks()[0].getSettings().deviceId;
+    await Video.play();
 }
 
 async function drawFrame(deltaTime)
@@ -121,7 +148,6 @@ async function drawFrame(deltaTime)
         }
     );
 }
-
 
 async function getCameras()
 {
